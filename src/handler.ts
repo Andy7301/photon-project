@@ -17,7 +17,14 @@ function userKey(msg: Message): string {
 export function createInboundHandler(sdk: IMessageSDK) {
   return async function handleInbound(msg: Message): Promise<void> {
     if (msg.isFromMe || msg.isReaction) return;
-    if (!isForDrafts(msg)) return;
+
+    const allowed = isForDrafts(msg);
+    if (config.debug || config.logIncomingDms) {
+      console.log(
+        `[drafts] inbound DM sender=${JSON.stringify(msg.sender)} chatId=${msg.chatId} allowed=${allowed}`,
+      );
+    }
+    if (!allowed) return;
 
     const rawText = msg.text ?? "";
     const text = stripRoutingPrefix(rawText);

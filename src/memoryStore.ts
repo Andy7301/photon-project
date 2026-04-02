@@ -2,6 +2,14 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { config } from "./config.js";
 
+function logPersist(data: MemoryFile): void {
+  if (!config.debug) return;
+  const keys = Object.keys(data.users);
+  console.log(
+    `[drafts] memory saved → ${config.memoryPath} (${keys.length} sender key(s): ${keys.join(", ") || "none"})`,
+  );
+}
+
 export type UserMemory = {
   tonePreference?: string;
   recentDrafts: string[];
@@ -15,19 +23,17 @@ export type MemoryFile = {
 
 const MAX_DRAFTS = 8;
 
-let cache: MemoryFile | null = null;
 let writeChain: Promise<void> = Promise.resolve();
 
+/** Always read from disk so concurrent updates and IDE saves stay consistent. */
 async function load(): Promise<MemoryFile> {
-  if (cache) return cache;
   try {
     const raw = await readFile(config.memoryPath, "utf8");
-    cache = JSON.parse(raw) as MemoryFile;
-    if (!cache.users) cache.users = {};
-    return cache;
+    const data = JSON.parse(raw) as MemoryFile;
+    if (!data.users) data.users = {};
+    return data;
   } catch {
-    cache = { users: {} };
-    return cache;
+    return { users: {} };
   }
 }
 
@@ -54,8 +60,8 @@ export const memoryStore = {
         lastIncoming: text.slice(0, 2000),
         updatedAt: new Date().toISOString(),
       };
-      cache = data;
       await persist(data);
+      logPersist(data);
     });
     await writeChain;
   },
@@ -74,8 +80,8 @@ export const memoryStore = {
         tonePreference: toneHint ?? prev.tonePreference,
         updatedAt: new Date().toISOString(),
       };
-      cache = data;
       await persist(data);
+      logPersist(data);
     });
     await writeChain;
   },

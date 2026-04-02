@@ -9,7 +9,7 @@ Rules:
 - No preamble like "Sure!" or "Here are three options". No bullet lists in the message bodies.
 - No emojis unless the user explicitly asked for them.
 - Each variant should be under 500 characters unless the user needs a longer group text.
-- If the user asks to be reminded later, fill "reminder" with naturalLanguageTime (e.g. "tomorrow 10am", "in 2 hours") and a short reason. Otherwise set reminder to null.
+- If the user asks to be reminded later, fill "reminder" with naturalLanguageTime. It must be parseable by a simple scheduler: prefer "tomorrow 10am", "friday 2pm", "5pm", or "in 2 hours" / "in 1 day". Never use a bare day word alone (no "tomorrow" without a time — use "tomorrow 9am" instead). Otherwise set reminder to null.
 - If the request is only a reminder with no drafting, still return three minimal placeholder variants OR reuse the same short reminder line for all three — prefer setting reminder and keeping variants as brief actionable notes the user could send to themselves (still valid JSON).
 
 JSON only.`;

@@ -19,7 +19,9 @@ export const config = {
   draftsPrefix: process.env.DRAFTS_PREFIX ?? "Drafts:",
   memoryPath: process.env.MEMORY_PATH ?? "./data/memory.json",
   debug: parseBool(process.env.DEBUG),
-  geminiModel: "gemini-3-flash-preview" as const,
+  /** Log every inbound DM: sender, chatId, and whether it passed routing (set true while debugging allowlist). */
+  logIncomingDms: parseBool(process.env.LOG_INCOMING_DMS),
+  geminiModel: process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
 };
 
 export function assertConfig(): void {

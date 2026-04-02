@@ -19,6 +19,27 @@ function getReminders(sdk: IMessageSDK): Reminders {
 }
 
 /**
+ * Photon's `Reminders.at()` requires a parseable clock time. Bare words like "tomorrow"
+ * fail; "tomorrow 9am" works. Normalize common LLM outputs before calling `at`.
+ */
+export function normalizePhotonTimeExpression(expression: string): string {
+  const raw = expression.trim();
+  const lower = raw.toLowerCase();
+
+  if (lower === "tomorrow" || lower === "tmrw") return "tomorrow 9am";
+  if (lower === "today") return "5pm";
+  if (lower === "tonight") return "8pm";
+
+  const weekdayOnly =
+    /^(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i;
+  if (weekdayOnly.test(raw)) {
+    return `${raw} 9am`;
+  }
+
+  return raw;
+}
+
+/**
  * Schedule a follow-up text using Photon's natural-language time parser.
  * Prefer `at` for clock times; use `in` when the model returns "in 5 minutes" style strings.
  */
@@ -39,7 +60,8 @@ export function scheduleReminder(
     return r.in(duration, to, body);
   }
 
-  return r.at(raw, to, body);
+  const atExpr = normalizePhotonTimeExpression(raw);
+  return r.at(atExpr, to, body);
 }
 
 export function destroyReminderService(): void {
