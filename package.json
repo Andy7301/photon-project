@@ -1,0 +1,25 @@
+{
+  "name": "drafts-imessage-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "@google/genai": "^1.48.0",
+    "@photon-ai/imessage-kit": "^2.1.2",
+    "better-sqlite3": "^11.10.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}
