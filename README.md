@@ -31,26 +31,29 @@ For development with reload:
 npm run dev
 ```
 
-Send a DM to this Mac from an allowed sender. Message `ping` to get `pong` (sanity check). Anything else goes through Drafts (drafts, rewrites, reminders per your message).
+Send a DM to this Mac from an allowed sender. Message `ping` to get `pong` (sanity check). Replies are numbered **1) 2) 3)** so you can say “shorter”, “option 2”, or “combine 1 and 2” on the next turn.
 
 ## Project layout
 
 | Path | Role |
 |------|------|
-| `src/index.ts` | Entry: SDK, watcher, shutdown |
+| `src/index.ts` | Entry: restore pending reminders, SDK, watcher, shutdown |
 | `src/messageWatcher.ts` | `startWatching` / `onDirectMessage` |
-| `src/handler.ts` | Route → Gemini → memory → reply |
-| `src/intentParser.ts` | draft / rewrite / reminder heuristics |
-| `src/draftEngine.ts` | `@google/genai` + JSON variants |
-| `src/memoryStore.ts` | JSON persistence (`data/` by default) |
-| `src/reminderService.ts` | Photon `Reminders` |
+| `src/handler.ts` | Resolve intent → Gemini → session + profile + reminders |
+| `src/intentResolver.ts` | Stateful follow-ups (iterate, combine, reminder, new draft) |
+| `src/draftSession.ts` | Helpers for latest turn / variants |
+| `src/draftEngine.ts` | `@google/genai` + JSON (variants, reminder, mode, preferences) |
+| `src/memoryStore.ts` | JSON: profile, `ActiveSession` turns, `pendingReminders` |
+| `src/reminderService.ts` | Linked reminders + persistence |
+| `src/prompts/modes.ts` | Recipient / mode prompt lines |
 
 ## Memory file (`MEMORY_PATH`, default `./data/memory.json`)
 
-- **`users`** has **one object per sender** (the iMessage `sender` id, e.g. `+15551234567`). If you only ever DM from one number, you will only see **one key** here — that is expected.
-- **`recentDrafts`** holds up to **8** last assistant draft strings (newest first); older ones roll off.
-- **`lastIncoming`** is the latest user message text we stored for that sender.
-- Set **`DEBUG=true`** to log each save: path, sender keys, and count.
+- **`users[sender].profile`**: optional `tone`, `length`, `styleNotes` (from explicit preferences / model updates).
+- **`users[sender].session`**: `ActiveSession` with `turns[]` (each turn has three labeled variants). New topics call `startFreshSession` so you get a new session id.
+- **`pendingReminders`**: scheduled reminders with `draftSnapshot`, `sendAt`, and Photon id for rescheduling after restart.
+- **`lastIncoming`**: latest user message snippet.
+- Set **`DEBUG=true`** to log each save.
 
 ## License
 

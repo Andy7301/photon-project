@@ -1,16 +1,25 @@
 import { GoogleGenAI } from "@google/genai";
 import { config } from "./config.js";
-import type { Intent } from "./intentParser.js";
 import { buildUserPrompt } from "./prompts/buildUserPrompt.js";
 import { SYSTEM_PROMPT } from "./prompts/system.js";
 import type { UserMemory } from "./memoryStore.js";
+import type { ResolvedIntent } from "./intentResolver.js";
 
 export type DraftVariant = { label: string; text: string };
 
 export type ParsedDraftResult = {
   variants: DraftVariant[];
   reminder: null | { naturalLanguageTime: string; reason: string };
+  recipientHint?: "recruiter" | "friend" | "professor" | "group" | "unknown" | null;
+  mode?: "follow_up" | "thank_you" | "apology" | "scheduling" | "general" | null;
+  preferenceUpdates?: {
+    tone?: string | null;
+    length?: "short" | "medium" | "long" | null;
+    styleNotes?: string[] | null;
+  } | null;
 };
+
+export type EngineOperation = "new_draft" | "iterate" | "combine";
 
 const ai = new GoogleGenAI({ apiKey: config.geminiApiKey });
 
@@ -32,9 +41,10 @@ export function parseDraftJson(raw: string): ParsedDraftResult {
 }
 
 export function formatForImessage(result: ParsedDraftResult): string {
-  const blocks = result.variants.map((v) => {
+  const blocks = result.variants.map((v, i) => {
+    const n = i + 1;
     const label = v.label.charAt(0).toUpperCase() + v.label.slice(1);
-    return `${label}\n${v.text.trim()}`;
+    return `${n}) ${label}\n${v.text.trim()}`;
   });
   let out = blocks.join("\n\n—\n\n");
   if (result.reminder) {
@@ -45,23 +55,19 @@ export function formatForImessage(result: ParsedDraftResult): string {
 
 export async function runDraftEngine(params: {
   userText: string;
-  intent: Intent;
+  operation: EngineOperation;
+  resolved: ResolvedIntent;
   memory: UserMemory | undefined;
+  baseTexts?: string[];
 }): Promise<ParsedDraftResult> {
-  const { userText, intent, memory } = params;
-
-  let intentForPrompt: Intent = intent;
-  if (intent.type === "rewrite" && !intent.previousUserText && memory?.recentDrafts?.[0]) {
-    intentForPrompt = {
-      ...intent,
-      previousUserText: memory.recentDrafts[0],
-    };
-  }
+  const { userText, operation, resolved, memory, baseTexts } = params;
 
   const userPrompt = buildUserPrompt({
     userText,
-    intent: intentForPrompt,
+    operation,
+    resolved,
     memory,
+    baseTexts,
   });
 
   const response = await ai.models.generateContent({

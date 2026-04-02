@@ -3,7 +3,7 @@ import { IMessageSDK } from "@photon-ai/imessage-kit";
 import { assertConfig, config } from "./config.js";
 import { createInboundHandler } from "./handler.js";
 import { startMessageWatcher } from "./messageWatcher.js";
-import { destroyReminderService } from "./reminderService.js";
+import { destroyReminderService, restorePendingReminders } from "./reminderService.js";
 
 assertConfig();
 
@@ -46,6 +46,7 @@ function logRoutingBanner(): void {
 
 async function main(): Promise<void> {
   logRoutingBanner();
+  await restorePendingReminders(sdk);
   await startMessageWatcher(sdk, handleInbound);
 }
 

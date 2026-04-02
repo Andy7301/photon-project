@@ -1,37 +1,76 @@
-import type { Intent } from "../intentParser.js";
+import type { ResolvedIntent } from "../intentResolver.js";
 import type { UserMemory } from "../memoryStore.js";
+import type { EngineOperation } from "../draftEngine.js";
+import { modeLine, recipientHintLine } from "./modes.js";
 
 export function buildUserPrompt(params: {
   userText: string;
-  intent: Intent;
+  operation: EngineOperation;
+  resolved: ResolvedIntent;
   memory: UserMemory | undefined;
+  baseTexts?: string[];
 }): string {
-  const { userText, intent, memory } = params;
+  const { userText, operation, resolved, memory, baseTexts } = params;
   const lines: string[] = [];
 
   lines.push(`User message:\n${userText.trim()}`);
 
-  if (intent.type === "rewrite" && intent.previousUserText) {
-    lines.push(`\nText to rewrite:\n${intent.previousUserText}`);
+  lines.push(`\nOperation: ${operation}`);
+  lines.push(`Resolved intent kind: ${resolved.kind}`);
+
+  if (resolved.kind === "iterate" || resolved.kind === "reminder") {
+    lines.push(`Constraints: ${resolved.constraints.join(" | ") || "(none)"}`);
+  }
+  if (resolved.kind === "iterate") {
+    lines.push(`Iterate op: ${resolved.op}`);
+    lines.push(`Selection indices (0-based): ${resolved.selection.join(", ")}`);
+  }
+  if (resolved.kind === "reminder") {
+    lines.push(`Link reminder to current draft: ${resolved.linkToDraft}`);
   }
 
-  lines.push(`\nDetected intent: ${intent.type}`);
-  if (intent.hints.length) {
-    lines.push(`Hints: ${intent.hints.join(", ")}`);
+  if (operation === "iterate" && baseTexts?.length) {
+    lines.push("\nText to transform (follow the user's constraints):");
+    baseTexts.forEach((t, i) => lines.push(`[${i + 1}] ${t}`));
   }
 
-  if (memory?.tonePreference) {
-    lines.push(`\nUser tone preference (bias variants toward this when reasonable): ${memory.tonePreference}`);
+  if (operation === "combine" && baseTexts && baseTexts.length >= 2) {
+    lines.push("\nCombine these into one message that preserves intent from both:");
+    lines.push(`A: ${baseTexts[0]}`);
+    lines.push(`B: ${baseTexts[1]}`);
   }
-  if (memory?.recentDrafts?.length) {
-    lines.push("\nRecent drafts from this user (for continuity, do not copy verbatim):");
-    for (const d of memory.recentDrafts.slice(-3)) {
-      lines.push(`- ${d}`);
+
+  const profile = memory?.profile;
+  if (profile?.tone) {
+    lines.push(`\nUser tone preference: ${profile.tone}`);
+  }
+  if (profile?.length) {
+    lines.push(`Length preference: ${profile.length}`);
+  }
+  if (profile?.styleNotes?.length) {
+    lines.push(`Style notes: ${profile.styleNotes.join("; ")}`);
+  }
+
+  const session = memory?.session;
+  if (session?.recipientHint) {
+    const r = recipientHintLine(session.recipientHint);
+    if (r) lines.push(`\n${r}`);
+  }
+  if (session?.mode) {
+    const m = modeLine(session.mode);
+    if (m) lines.push(m);
+  }
+
+  if (session?.turns?.length) {
+    const last = session.turns[session.turns.length - 1];
+    lines.push("\nPrevious turn variants (for context; rewrite or improve as requested):");
+    for (const v of last.variants) {
+      lines.push(`- ${v.label}: ${v.text.slice(0, 400)}${v.text.length > 400 ? "…" : ""}`);
     }
   }
 
   lines.push(
-    "\nReturn JSON only per the system schema. If reminder is appropriate, include naturalLanguageTime the user asked for.",
+    "\nReturn JSON only per the system schema. If reminder is appropriate, include naturalLanguageTime.",
   );
 
   return lines.join("\n");
