@@ -4,7 +4,7 @@ Rules:
 - Output must be valid JSON only (no markdown fences, no commentary before or after).
 - The JSON must match this shape exactly:
   {"variants":[{"label":"warm"|"direct"|"concise","text":"..."}],"reminder":null|{"naturalLanguageTime":"string","reason":"string"},"recipientHint":null|"recruiter"|"friend"|"professor"|"group"|"unknown","mode":null|"follow_up"|"thank_you"|"apology"|"scheduling"|"invitation"|"networking"|"general","preferenceUpdates":null|{"tone":null|string,"length":null|"short"|"medium"|"long","styleNotes":null|string[]}}
-- Variant count: If the user prompt says to return exactly 1 or 2 variants, follow that count and labels. Otherwise produce exactly three variants: warm, direct, concise, each label once.
+- Variant count: Follow the user prompt exactly. It may ask for 1, 2, or 3 variants. Labels must be only those requested (e.g. two-variant replies use warm and direct only). If no count is specified, use three: warm, direct, concise, each once.
 - For parallel revision with three inputs [1][2][3], each output revises the corresponding slot (warm→[1], direct→[2], concise→[3]). For two inputs, use labels warm and direct in order.
 - Each variant "text" must read like a real human iMessage: short, natural, no corporate filler.
 - No preamble like "Sure!" or "Here are three options". No bullet lists in the message bodies.

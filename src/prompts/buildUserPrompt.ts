@@ -1,7 +1,7 @@
 import type { ResolvedIntent } from "../intentResolver.js";
 import type { UserMemory } from "../memoryStore.js";
 import type { EngineOperation } from "../draftEngine.js";
-import { modeLine, recipientHintLine } from "./modes.js";
+import type { PromptAddenda } from "../intelligence/promptSelector.js";
 
 export function buildUserPrompt(params: {
   userText: string;
@@ -9,14 +9,26 @@ export function buildUserPrompt(params: {
   resolved: ResolvedIntent;
   memory: UserMemory | undefined;
   baseTexts?: string[];
-  /** Rewrite-all: exact number of variants to return (1–3). */
+  /** Rewrite-all or new_draft: exact variant count in JSON. */
   expectedVariantCount?: number;
+  promptAddenda?: PromptAddenda;
 }): string {
-  const { userText, operation, resolved, memory, baseTexts, expectedVariantCount } =
-    params;
+  const {
+    userText,
+    operation,
+    resolved,
+    memory,
+    baseTexts,
+    expectedVariantCount,
+    promptAddenda,
+  } = params;
   const lines: string[] = [];
 
   lines.push(`User message:\n${userText.trim()}`);
+
+  if (promptAddenda?.userAddendum) {
+    lines.push(`\n${promptAddenda.userAddendum}`);
+  }
 
   lines.push(`\nOperation: ${operation}`);
   lines.push(`Resolved intent kind: ${resolved.kind}`);
@@ -41,6 +53,18 @@ export function buildUserPrompt(params: {
     lines.push(`Link reminder to current draft: ${resolved.linkToDraft}`);
   }
 
+  if (resolved.kind === "new_draft" && expectedVariantCount !== undefined) {
+    if (expectedVariantCount === 2) {
+      lines.push(
+        '\nReturn exactly TWO variants with labels "warm" and "direct" only (in that order).',
+      );
+    } else if (expectedVariantCount === 3) {
+      lines.push(
+        '\nReturn exactly THREE variants with labels "warm", "direct", and "concise" (each once).',
+      );
+    }
+  }
+
   if (operation === "iterate" && baseTexts?.length) {
     if (
       resolved.kind === "iterate" &&
@@ -51,15 +75,15 @@ export function buildUserPrompt(params: {
       const n = expectedVariantCount;
       if (n === 1) {
         lines.push(
-          "\nReturn exactly ONE variant. Apply the user's constraint to the text below. Use label \"direct\" unless the edit clearly favors warmth (\"warm\") or brevity (\"concise\").",
+          '\nReturn exactly ONE variant. Apply the user\'s constraint to the text below. Use label "direct" unless the edit clearly favors warmth ("warm") or brevity ("concise").',
         );
       } else if (n === 2) {
         lines.push(
-          "\nParallel revision: return exactly TWO variants with labels \"warm\" and \"direct\" (in that order). Warm revises [1], direct revises [2].",
+          '\nParallel revision: return exactly TWO variants with labels "warm" and "direct" (in that order). Warm revises [1], direct revises [2].',
         );
       } else {
         lines.push(
-          "\nParallel revision: return exactly THREE variants with labels \"warm\", \"direct\", \"concise\" (in that order). Each revises the corresponding input: warm→[1], direct→[2], concise→[3].",
+          '\nParallel revision: return exactly THREE variants with labels "warm", "direct", "concise" (in that order). Each revises the corresponding input: warm→[1], direct→[2], concise→[3].',
         );
       }
     }
@@ -85,15 +109,6 @@ export function buildUserPrompt(params: {
   }
 
   const session = memory?.session;
-  if (session?.recipientHint) {
-    const r = recipientHintLine(session.recipientHint);
-    if (r) lines.push(`\n${r}`);
-  }
-  if (session?.mode) {
-    const m = modeLine(session.mode);
-    if (m) lines.push(m);
-  }
-
   if (session?.turns?.length) {
     const last = session.turns[session.turns.length - 1];
     lines.push("\nPrevious turn variants (for context; rewrite or improve as requested):");

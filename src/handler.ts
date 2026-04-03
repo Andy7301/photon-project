@@ -6,6 +6,8 @@ import {
   type EngineOperation,
 } from "./draftEngine.js";
 import { getLatestVariants } from "./draftSession.js";
+import { mergeDraftContext, shouldClarifyAudienceForNewDraft } from "./intelligence/mergeDraftContext.js";
+import { selectPromptParts } from "./intelligence/promptSelector.js";
 import { resolveIntent, wantsExplicitAlternatives } from "./intentResolver.js";
 import {
   memoryStore,
@@ -54,6 +56,24 @@ export function createInboundHandler(sdk: IMessageSDK) {
       return;
     }
 
+    const merged = mergeDraftContext(text, memoryBefore);
+    const promptAddenda = selectPromptParts({
+      ctx: merged,
+      profile: memoryBefore?.profile,
+      userText: text,
+    });
+
+    if (
+      resolved.kind === "new_draft" &&
+      shouldClarifyAudienceForNewDraft(merged, memoryBefore, text)
+    ) {
+      await sdk.send(
+        msg.chatId,
+        "Quick check: is this for a recruiter, a friend, a professor, or someone else? One word is fine — then I’ll tailor the draft.",
+      );
+      return;
+    }
+
     if (resolved.kind === "new_draft") {
       await memoryStore.startFreshSession(key);
     }
@@ -62,8 +82,12 @@ export function createInboundHandler(sdk: IMessageSDK) {
 
     let operation: EngineOperation = "new_draft";
     let baseTexts: string[] | undefined;
-    /** For rewrite-all: how many variants to ask the model for (matches prior turn count, 1–3). */
+    /** Rewrite-all or new_draft: exact variant count for JSON validation. */
     let expectedVariantCount: number | undefined;
+
+    if (resolved.kind === "new_draft") {
+      expectedVariantCount = merged.isReplyRequest ? 2 : 3;
+    }
 
     if (resolved.kind === "iterate") {
       operation = resolved.op === "combine" ? "combine" : "iterate";
@@ -131,6 +155,7 @@ export function createInboundHandler(sdk: IMessageSDK) {
         memory,
         baseTexts,
         expectedVariantCount,
+        promptAddenda,
       });
 
       if (result.preferenceUpdates) {
@@ -167,25 +192,35 @@ export function createInboundHandler(sdk: IMessageSDK) {
         recipientHint?: RecipientHint;
         mode?: DraftMode;
       } = {};
-      if (result.recipientHint && result.recipientHint !== "unknown") {
-        hints.recipientHint = result.recipientHint;
-      }
-      if (result.mode && result.mode !== "general") {
-        hints.mode = result.mode;
-      }
+      const rh =
+        result.recipientHint && result.recipientHint !== "unknown"
+          ? result.recipientHint
+          : merged.recipient !== "unknown"
+            ? merged.recipient
+            : undefined;
+      const md =
+        result.mode && result.mode !== "general"
+          ? result.mode
+          : merged.mode !== "general"
+            ? merged.mode
+            : undefined;
+      if (rh) hints.recipientHint = rh;
+      if (md) hints.mode = md;
       if (Object.keys(hints).length) {
         await memoryStore.mergeSessionHints(key, hints);
       }
 
       const renderCount: 1 | 2 | 3 =
-        resolved.kind === "iterate" &&
-        resolved.op === "rewrite" &&
-        resolved.rewriteScope === "all" &&
-        expectedVariantCount !== undefined
+        resolved.kind === "new_draft" && expectedVariantCount !== undefined
           ? (expectedVariantCount as 1 | 2 | 3)
-          : resolved.wantMultipleOptions
-            ? 3
-            : 1;
+          : resolved.kind === "iterate" &&
+              resolved.op === "rewrite" &&
+              resolved.rewriteScope === "all" &&
+              expectedVariantCount !== undefined
+            ? (expectedVariantCount as 1 | 2 | 3)
+            : resolved.wantMultipleOptions
+              ? 3
+              : 1;
       let selectedIndex: number | undefined;
       if (renderCount === 1) {
         const combined = `${text}\n${resolved.constraints.join(" ")}`.toLowerCase();

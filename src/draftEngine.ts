@@ -2,6 +2,7 @@ import { GoogleGenAI } from "@google/genai";
 import { config } from "./config.js";
 import { buildUserPrompt } from "./prompts/buildUserPrompt.js";
 import { SYSTEM_PROMPT } from "./prompts/system.js";
+import type { PromptAddenda } from "./intelligence/promptSelector.js";
 import type { UserMemory } from "./memoryStore.js";
 import type { ResolvedIntent } from "./intentResolver.js";
 
@@ -88,17 +89,31 @@ export function formatForImessageWithRender(
   return `${blocks.join("\n\n—\n\n")}${reminderFooter}`;
 }
 
+function composeSystemInstruction(promptAddenda?: PromptAddenda): string {
+  const extra = promptAddenda?.systemAddendum?.trim();
+  if (!extra) return SYSTEM_PROMPT;
+  return `${SYSTEM_PROMPT}\n\n---\nContext for this turn:\n${extra}`;
+}
+
 export async function runDraftEngine(params: {
   userText: string;
   operation: EngineOperation;
   resolved: ResolvedIntent;
   memory: UserMemory | undefined;
   baseTexts?: string[];
-  /** When set (rewrite-all), JSON must contain exactly this many variants. */
+  /** When set, JSON must contain exactly this many variants (rewrite-all or new_draft). */
   expectedVariantCount?: number;
+  promptAddenda?: PromptAddenda;
 }): Promise<ParsedDraftResult> {
-  const { userText, operation, resolved, memory, baseTexts, expectedVariantCount } =
-    params;
+  const {
+    userText,
+    operation,
+    resolved,
+    memory,
+    baseTexts,
+    expectedVariantCount,
+    promptAddenda,
+  } = params;
 
   const userPrompt = buildUserPrompt({
     userText,
@@ -107,13 +122,14 @@ export async function runDraftEngine(params: {
     memory,
     baseTexts,
     expectedVariantCount,
+    promptAddenda,
   });
 
   const response = await ai.models.generateContent({
     model: config.geminiModel,
     contents: userPrompt,
     config: {
-      systemInstruction: SYSTEM_PROMPT,
+      systemInstruction: composeSystemInstruction(promptAddenda),
       responseMimeType: "application/json",
       temperature: 0.7,
     },
