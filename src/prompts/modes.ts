@@ -19,6 +19,10 @@ const MODE_LINES: Record<DraftMode, string> = {
   apology: "Message type: apology — accountable, concise, no over-explaining.",
   scheduling:
     "Message type: scheduling — concrete times/options, easy to reply yes/no.",
+  invitation:
+    "Message type: invitation — clear what/when; easy to accept or suggest an alternative.",
+  networking:
+    "Message type: networking — professional warmth; specific hook; not cold or salesy.",
   general: "",
 };
 

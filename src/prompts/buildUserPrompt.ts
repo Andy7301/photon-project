@@ -9,8 +9,11 @@ export function buildUserPrompt(params: {
   resolved: ResolvedIntent;
   memory: UserMemory | undefined;
   baseTexts?: string[];
+  /** Rewrite-all: exact number of variants to return (1–3). */
+  expectedVariantCount?: number;
 }): string {
-  const { userText, operation, resolved, memory, baseTexts } = params;
+  const { userText, operation, resolved, memory, baseTexts, expectedVariantCount } =
+    params;
   const lines: string[] = [];
 
   lines.push(`User message:\n${userText.trim()}`);
@@ -23,13 +26,43 @@ export function buildUserPrompt(params: {
   }
   if (resolved.kind === "iterate") {
     lines.push(`Iterate op: ${resolved.op}`);
-    lines.push(`Selection indices (0-based): ${resolved.selection.join(", ")}`);
+    if (resolved.op === "rewrite") {
+      lines.push(`Rewrite scope: ${resolved.rewriteScope}`);
+      if (resolved.rewriteScope === "single") {
+        lines.push(`Selection indices (0-based): ${resolved.selection.join(", ")}`);
+      }
+    } else {
+      lines.push(
+        `Combine indices (0-based): ${resolved.selection[0]}, ${resolved.selection[1]}`,
+      );
+    }
   }
   if (resolved.kind === "reminder") {
     lines.push(`Link reminder to current draft: ${resolved.linkToDraft}`);
   }
 
   if (operation === "iterate" && baseTexts?.length) {
+    if (
+      resolved.kind === "iterate" &&
+      resolved.op === "rewrite" &&
+      resolved.rewriteScope === "all" &&
+      expectedVariantCount !== undefined
+    ) {
+      const n = expectedVariantCount;
+      if (n === 1) {
+        lines.push(
+          "\nReturn exactly ONE variant. Apply the user's constraint to the text below. Use label \"direct\" unless the edit clearly favors warmth (\"warm\") or brevity (\"concise\").",
+        );
+      } else if (n === 2) {
+        lines.push(
+          "\nParallel revision: return exactly TWO variants with labels \"warm\" and \"direct\" (in that order). Warm revises [1], direct revises [2].",
+        );
+      } else {
+        lines.push(
+          "\nParallel revision: return exactly THREE variants with labels \"warm\", \"direct\", \"concise\" (in that order). Each revises the corresponding input: warm→[1], direct→[2], concise→[3].",
+        );
+      }
+    }
     lines.push("\nText to transform (follow the user's constraints):");
     baseTexts.forEach((t, i) => lines.push(`[${i + 1}] ${t}`));
   }

@@ -1,12 +1,12 @@
 import type { IMessageSDK, Message } from "@photon-ai/imessage-kit";
 import { config } from "./config.js";
 import {
-  formatForImessage,
+  formatForImessageWithRender,
   runDraftEngine,
   type EngineOperation,
 } from "./draftEngine.js";
 import { getLatestVariants } from "./draftSession.js";
-import { resolveIntent } from "./intentResolver.js";
+import { resolveIntent, wantsExplicitAlternatives } from "./intentResolver.js";
 import {
   memoryStore,
   type DraftMode,
@@ -62,6 +62,8 @@ export function createInboundHandler(sdk: IMessageSDK) {
 
     let operation: EngineOperation = "new_draft";
     let baseTexts: string[] | undefined;
+    /** For rewrite-all: how many variants to ask the model for (matches prior turn count, 1–3). */
+    let expectedVariantCount: number | undefined;
 
     if (resolved.kind === "iterate") {
       operation = resolved.op === "combine" ? "combine" : "iterate";
@@ -78,6 +80,21 @@ export function createInboundHandler(sdk: IMessageSDK) {
           return;
         }
         baseTexts = [ta, tb];
+      } else if (resolved.rewriteScope === "all") {
+        if (!latest.length) {
+          await sdk.send(
+            msg.chatId,
+            "No draft to refine. Ask for a new draft first.",
+          );
+          return;
+        }
+        const n = Math.min(3, latest.length);
+        // One prior draft → one output unless user explicitly asks for three alternatives.
+        expectedVariantCount = wantsExplicitAlternatives(text) && n === 1 ? 3 : n;
+        baseTexts =
+          latest.length >= 3
+            ? latest.slice(0, 3).map((v) => v.text)
+            : latest.map((v) => v.text);
       } else {
         const idx = resolved.selection[0] ?? 0;
         await memoryStore.setSelectedVariant(key, idx);
@@ -113,6 +130,7 @@ export function createInboundHandler(sdk: IMessageSDK) {
         resolved,
         memory,
         baseTexts,
+        expectedVariantCount,
       });
 
       if (result.preferenceUpdates) {
@@ -159,7 +177,36 @@ export function createInboundHandler(sdk: IMessageSDK) {
         await memoryStore.mergeSessionHints(key, hints);
       }
 
-      const out = formatForImessage(result);
+      const renderCount: 1 | 2 | 3 =
+        resolved.kind === "iterate" &&
+        resolved.op === "rewrite" &&
+        resolved.rewriteScope === "all" &&
+        expectedVariantCount !== undefined
+          ? (expectedVariantCount as 1 | 2 | 3)
+          : resolved.wantMultipleOptions
+            ? 3
+            : 1;
+      let selectedIndex: number | undefined;
+      if (renderCount === 1) {
+        const combined = `${text}\n${resolved.constraints.join(" ")}`.toLowerCase();
+        const wantsShorter = /shorter|tight|concise|condense|tighten|trim/.test(combined);
+        const wantsWarmer = /warmer|warm|polite|friendly|confident|more confident/.test(combined);
+        const desiredLabel = wantsShorter ? "concise" : wantsWarmer ? "warm" : "direct";
+        const found = result.variants.findIndex((v) => v.label === desiredLabel);
+        selectedIndex =
+          found >= 0
+            ? found
+            : desiredLabel === "warm"
+              ? 0
+              : desiredLabel === "concise"
+                ? 2
+                : 1;
+      }
+
+      const out = formatForImessageWithRender(result, {
+        renderCount,
+        selectedIndex,
+      });
       await sdk.send(msg.chatId, out);
     } catch (e) {
       const err = e as Error;

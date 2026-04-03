@@ -14,22 +14,47 @@ export type ResolvedIntent =
   | {
       kind: "new_draft";
       constraints: string[];
+      wantMultipleOptions: boolean;
     }
   | {
       kind: "iterate";
-      op: "rewrite" | "combine";
+      op: "rewrite";
+      rewriteScope: "all" | "single";
       selection: number[];
       constraints: string[];
+      wantMultipleOptions: boolean;
+    }
+  | {
+      kind: "iterate";
+      op: "combine";
+      selection: [number, number];
+      constraints: string[];
+      wantMultipleOptions: boolean;
     }
   | {
       kind: "reminder";
       constraints: string[];
       linkToDraft: boolean;
+      wantMultipleOptions: boolean;
     }
   | {
       kind: "clarify";
       message: string;
+      wantMultipleOptions: false;
     };
+
+/** Exported for handler: when prior turn has one draft, user can still ask for three alternatives. */
+export function wantsExplicitAlternatives(text: string): boolean {
+  // Trigger on "options/alternatives/choices/variants" wording.
+  // Intentionally does not match "option 2" (singular) used for iteration.
+  const lower = text.toLowerCase();
+  const hasChoiceWord = /\b(options|alternatives|choices|variants)\b/.test(lower);
+  const hasShowOrGive = /\b(show|give|display)\b/.test(lower);
+  const hasMore = /\bmore\b/.test(lower);
+  const hasThree = /\b(3|three)\b/.test(lower);
+  if (!hasChoiceWord) return false;
+  return hasShowOrGive || hasMore || hasThree;
+}
 
 function parseOrdinalIndices(text: string): number[] | null {
   const combine = text.match(COMBINE_RE);
@@ -37,6 +62,19 @@ function parseOrdinalIndices(text: string): number[] | null {
     const a = Number.parseInt(combine[1], 10) - 1;
     const b = Number.parseInt(combine[2], 10) - 1;
     if (a >= 0 && a <= 2 && b >= 0 && b <= 2) return [a, b];
+  }
+
+  const scopedEdit = text.match(
+    /\b(shorter|warmer|casual|snappier|tighten|condense)\s+(?:#|option\s*)?(\d)\b/i,
+  );
+  if (scopedEdit) {
+    const n = Number.parseInt(scopedEdit[2], 10);
+    if (n >= 1 && n <= 3) return [n - 1];
+  }
+  const revEdit = text.match(/\b(\d)\s+(shorter|warmer|casual|snappier)\b/i);
+  if (revEdit) {
+    const n = Number.parseInt(revEdit[1], 10);
+    if (n >= 1 && n <= 3) return [n - 1];
   }
 
   const vm = text.match(VERSION_RE);
@@ -59,11 +97,6 @@ function parseOrdinalIndices(text: string): number[] | null {
   return null;
 }
 
-function defaultSelection(session: ActiveSession | null | undefined): number {
-  if (session?.selectedVariantIndex !== undefined) return session.selectedVariantIndex;
-  return 0;
-}
-
 export function resolveIntent(
   text: string,
   ctx: {
@@ -73,16 +106,26 @@ export function resolveIntent(
 ): ResolvedIntent {
   const t = text.trim();
   if (!t) {
-    return { kind: "clarify", message: "Send a message to draft or refine." };
+    return {
+      kind: "clarify",
+      message: "Send a message to draft or refine.",
+      wantMultipleOptions: false,
+    };
   }
 
   const hasSession = Boolean(ctx.session?.turns?.length);
   const variants = getLatestVariants(ctx.session ?? null);
+  const explicitMulti = wantsExplicitAlternatives(t);
 
   if (REMINDER_RE.test(t)) {
     const linkToDraft =
       /\b(this|that|it|send)\b/i.test(t) && variants.length > 0;
-    return { kind: "reminder", constraints: [], linkToDraft };
+    return {
+      kind: "reminder",
+      constraints: [],
+      linkToDraft,
+      wantMultipleOptions: explicitMulti,
+    };
   }
 
   const ordinals = parseOrdinalIndices(t);
@@ -94,6 +137,7 @@ export function resolveIntent(
       kind: "clarify",
       message:
         "I need an active draft first. Ask for a draft, then say something like “combine 1 and 2”.",
+      wantMultipleOptions: false,
     };
   }
 
@@ -105,6 +149,7 @@ export function resolveIntent(
       op: "combine",
       selection: [a, b],
       constraints: [t],
+      wantMultipleOptions: explicitMulti,
     };
   }
 
@@ -112,36 +157,38 @@ export function resolveIntent(
     return {
       kind: "iterate",
       op: "combine",
-      selection: ordinals,
+      selection: [ordinals[0], ordinals[1]],
       constraints: [t],
+      wantMultipleOptions: explicitMulti,
     };
   }
 
-  if (hasSession && (wantsIterateWords || ordinals !== null)) {
-    if (ordinals && ordinals.length === 1 && wantsIterateWords) {
-      return {
-        kind: "iterate",
-        op: "rewrite",
-        selection: ordinals,
-        constraints: [t],
-      };
-    }
-    if (ordinals && ordinals.length === 1 && !wantsIterateWords) {
-      return {
-        kind: "iterate",
-        op: "rewrite",
-        selection: ordinals,
-        constraints: ["Adjust tone/length to match what I asked before.", t],
-      };
-    }
-    if (wantsIterateWords) {
-      return {
-        kind: "iterate",
-        op: "rewrite",
-        selection: [defaultSelection(ctx.session ?? undefined)],
-        constraints: [t],
-      };
-    }
+  // Unscoped edit words: match # of outputs to # of variants in last turn (1–3); explicit “3 alternatives” can force 3 when only one prior exists.
+  if (hasSession && wantsIterateWords && ordinals === null) {
+    const priorN = Math.min(3, variants.length);
+    const multiDisplay = explicitMulti ? true : priorN > 1;
+    return {
+      kind: "iterate",
+      op: "rewrite",
+      rewriteScope: "all",
+      selection: [],
+      constraints: [t],
+      wantMultipleOptions: multiDisplay,
+    };
+  }
+
+  // Scoped to one option: "shorter 2", "second", "option 3", "#1 warmer", etc.
+  if (hasSession && ordinals && ordinals.length === 1) {
+    return {
+      kind: "iterate",
+      op: "rewrite",
+      rewriteScope: "single",
+      selection: ordinals,
+      constraints: wantsIterateWords
+        ? [t]
+        : ["Adjust tone/length to match what I asked before.", t],
+      wantMultipleOptions: explicitMulti,
+    };
   }
 
   if (!hasSession && (wantsIterateWords || (ordinals && !REMINDER_RE.test(t)))) {
@@ -149,8 +196,9 @@ export function resolveIntent(
       kind: "clarify",
       message:
         "I don’t have an active draft yet. Send what you want to say (e.g. follow up with a recruiter), then you can say “shorter” or “option 2”.",
+      wantMultipleOptions: false,
     };
   }
 
-  return { kind: "new_draft", constraints: [t] };
+  return { kind: "new_draft", constraints: [t], wantMultipleOptions: true };
 }

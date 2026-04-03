@@ -25,6 +25,8 @@ export type DraftMode =
   | "thank_you"
   | "apology"
   | "scheduling"
+  | "invitation"
+  | "networking"
   | "general";
 
 export type ActiveSession = {
