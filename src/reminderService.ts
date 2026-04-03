@@ -88,6 +88,51 @@ export async function scheduleLinkedReminder(
     draftSnapshot: link.draftSnapshot,
     reason: reminder.reason,
     sessionId: link.sessionId,
+    kind: "reminder",
+  });
+}
+
+/**
+ * Proactive nudge (Phase 4): same transport as reminders, tagged as kind `nudge`.
+ */
+export async function scheduleNudge(
+  sdk: IMessageSDK,
+  msg: Message,
+  plan: { when: string; reason: string; bodySuffix: string; draftId: string },
+  link: { userKey: string; sessionId: string },
+): Promise<void> {
+  const r = getReminders(sdk);
+  const to = msg.chatId;
+  const body = `${plan.reason}\n\n---\n${plan.bodySuffix}`;
+  const id = crypto.randomUUID();
+
+  const raw = plan.when.trim();
+  const lower = raw.toLowerCase();
+
+  if (lower.startsWith("in ")) {
+    const duration = raw.replace(/^in\s+/i, "").trim();
+    r.in(duration, to, body, { id });
+  } else {
+    const atExpr = normalizePhotonTimeExpression(raw);
+    r.at(atExpr, to, body, { id });
+  }
+
+  let rec = r.get(id);
+  if (!rec) {
+    rec = r.list().find((x) => x.id === id);
+  }
+  const sendAt = rec?.scheduledFor ?? new Date(Date.now() + 60_000);
+
+  await memoryStore.addPendingReminder({
+    id,
+    userKey: link.userKey,
+    chatId: to,
+    sendAt: sendAt.toISOString(),
+    draftSnapshot: plan.bodySuffix.slice(0, 1500),
+    reason: plan.reason,
+    sessionId: link.sessionId,
+    kind: "nudge",
+    draftId: plan.draftId,
   });
 }
 

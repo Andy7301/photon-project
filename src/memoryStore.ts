@@ -39,6 +39,32 @@ export type ActiveSession = {
   selectedVariantIndex?: number;
 };
 
+export type DraftStatus =
+  | "created"
+  | "edited"
+  | "finalized"
+  | "pending_send"
+  | "sent"
+  | "abandoned";
+
+export type DraftRecord = {
+  id: string;
+  status: DraftStatus;
+  session: ActiveSession;
+  title?: string;
+  recipientHint?: RecipientHint;
+  mode?: DraftMode;
+  createdAt: string;
+  updatedAt: string;
+  lastNudgedAt?: string;
+  nudgeCount?: number;
+};
+
+export type NudgePreferences = {
+  optOut?: boolean;
+  snoozeUntil?: string;
+};
+
 export type UserMemory = {
   profile?: UserProfile;
   session?: ActiveSession | null;
@@ -48,7 +74,12 @@ export type UserMemory = {
   recentDrafts?: string[];
   lastIncoming?: string;
   updatedAt: string;
+  drafts?: DraftRecord[];
+  activeDraftId?: string | null;
+  nudgePreferences?: NudgePreferences;
 };
+
+export type PendingReminderKind = "reminder" | "nudge";
 
 export type PendingReminderRecord = {
   id: string;
@@ -58,12 +89,63 @@ export type PendingReminderRecord = {
   draftSnapshot: string;
   reason: string;
   sessionId: string;
+  kind?: PendingReminderKind;
+  draftId?: string;
 };
 
 export type MemoryFile = {
   users: Record<string, UserMemory>;
   pendingReminders: PendingReminderRecord[];
 };
+
+function cloneSession(s: ActiveSession): ActiveSession {
+  return JSON.parse(JSON.stringify(s)) as ActiveSession;
+}
+
+/** After edits, new content moves draft out of terminal/finalized states. */
+function statusAfterEdit(d: DraftRecord): DraftStatus {
+  if (d.status === "sent" || d.status === "abandoned") return "edited";
+  if (d.status === "finalized" || d.status === "pending_send") return "edited";
+  if (!d.session.turns?.length) return "created";
+  return "edited";
+}
+
+export function migrateDraftsForUser(user: UserMemory): UserMemory {
+  let drafts = user.drafts ?? [];
+  let activeDraftId = user.activeDraftId;
+  let session = user.session ?? null;
+
+  if (drafts.length === 0 && session?.turns?.length) {
+    const rec: DraftRecord = {
+      id: session.id,
+      status: "edited",
+      session: cloneSession(session),
+      recipientHint: session.recipientHint,
+      mode: session.mode,
+      createdAt: session.startedAt,
+      updatedAt: user.updatedAt,
+    };
+    drafts = [rec];
+    activeDraftId = rec.id;
+  }
+
+  if (drafts.length > 0) {
+    if (activeDraftId) {
+      const active = drafts.find((d) => d.id === activeDraftId);
+      if (active) {
+        session = cloneSession(active.session);
+      } else {
+        activeDraftId = drafts[0].id;
+        session = cloneSession(drafts[0].session);
+      }
+    } else {
+      activeDraftId = drafts[0].id;
+      session = cloneSession(drafts[0].session);
+    }
+  }
+
+  return { ...user, drafts, activeDraftId, session };
+}
 
 function logPersist(data: MemoryFile): void {
   if (!config.debug) return;
@@ -112,7 +194,7 @@ function migrateUser(user: UserMemory): UserMemory {
   };
   delete (out as { recentDrafts?: string[] }).recentDrafts;
   delete (out as { tonePreference?: string }).tonePreference;
-  return out;
+  return migrateDraftsForUser(out);
 }
 
 function migrateFile(data: MemoryFile): MemoryFile {
@@ -120,6 +202,9 @@ function migrateFile(data: MemoryFile): MemoryFile {
   const users: Record<string, UserMemory> = {};
   for (const [k, u] of Object.entries(data.users ?? {})) {
     users[k] = migrateUser(u);
+  }
+  for (const p of data.pendingReminders) {
+    if (!p.kind) p.kind = "reminder";
   }
   return { ...data, users, pendingReminders: data.pendingReminders };
 }
@@ -147,7 +232,8 @@ export const memoryStore = {
 
   async get(userKey: string): Promise<UserMemory | undefined> {
     const data = await load();
-    return data.users[userKey];
+    const u = data.users[userKey];
+    return u ? migrateUser(u) : undefined;
   },
 
   async recordIncoming(userKey: string, text: string): Promise<void> {
@@ -170,7 +256,7 @@ export const memoryStore = {
   async saveUser(userKey: string, memory: UserMemory): Promise<void> {
     writeChain = writeChain.then(async () => {
       const data = await load();
-      data.users[userKey] = { ...memory, updatedAt: new Date().toISOString() };
+      data.users[userKey] = { ...migrateUser(memory), updatedAt: new Date().toISOString() };
       await persist(data);
       logPersist(data);
     });
@@ -192,13 +278,45 @@ export const memoryStore = {
     await writeChain;
   },
 
-  async setSession(userKey: string, session: ActiveSession | null): Promise<void> {
+  async mergeNudgePreferences(
+    userKey: string,
+    updates: Partial<NudgePreferences>,
+  ): Promise<void> {
     writeChain = writeChain.then(async () => {
       const data = await load();
       const prev = migrateUser(data.users[userKey] ?? { updatedAt: new Date().toISOString() });
       data.users[userKey] = {
         ...prev,
+        nudgePreferences: { ...prev.nudgePreferences, ...updates },
+        updatedAt: new Date().toISOString(),
+      };
+      await persist(data);
+      logPersist(data);
+    });
+    await writeChain;
+  },
+
+  async setSession(userKey: string, session: ActiveSession | null): Promise<void> {
+    writeChain = writeChain.then(async () => {
+      const data = await load();
+      const prev = migrateUser(data.users[userKey] ?? { updatedAt: new Date().toISOString() });
+      const migrated = migrateDraftsForUser(prev);
+      let drafts = [...(migrated.drafts ?? [])];
+      const activeId = migrated.activeDraftId;
+      if (session && activeId) {
+        const ix = drafts.findIndex((d) => d.id === activeId);
+        if (ix >= 0) {
+          drafts[ix] = {
+            ...drafts[ix],
+            session,
+            updatedAt: new Date().toISOString(),
+          };
+        }
+      }
+      data.users[userKey] = {
+        ...migrated,
         session,
+        drafts,
         updatedAt: new Date().toISOString(),
       };
       await persist(data);
@@ -211,11 +329,41 @@ export const memoryStore = {
     writeChain = writeChain.then(async () => {
       const data = await load();
       const prev = migrateUser(data.users[userKey] ?? { updatedAt: new Date().toISOString() });
-      let session = prev.session ?? createEmptySession();
-      session = appendTurn(session, variants);
+      let drafts = [...(prev.drafts ?? [])];
+      let activeId = prev.activeDraftId;
+
+      let activeDraft = drafts.find((d) => d.id === activeId);
+      if (!activeDraft) {
+        const s = prev.session ?? createEmptySession();
+        activeDraft = {
+          id: s.id,
+          status: "created",
+          session: s,
+          createdAt: s.startedAt,
+          updatedAt: new Date().toISOString(),
+        };
+        drafts.push(activeDraft);
+        activeId = activeDraft.id;
+      }
+
+      const newSession = appendTurn(activeDraft.session, variants);
+      const nextDraft: DraftRecord = {
+        ...activeDraft,
+        session: newSession,
+        status: statusAfterEdit(activeDraft),
+        updatedAt: new Date().toISOString(),
+        recipientHint: newSession.recipientHint ?? activeDraft.recipientHint,
+        mode: newSession.mode ?? activeDraft.mode,
+      };
+      const idx = drafts.findIndex((d) => d.id === nextDraft.id);
+      if (idx >= 0) drafts[idx] = nextDraft;
+      else drafts.push(nextDraft);
+
       data.users[userKey] = {
         ...prev,
-        session,
+        drafts,
+        activeDraftId: activeId,
+        session: newSession,
         updatedAt: new Date().toISOString(),
       };
       await persist(data);
@@ -227,17 +375,47 @@ export const memoryStore = {
   },
 
   async startFreshSession(userKey: string): Promise<void> {
-    await memoryStore.setSession(userKey, createEmptySession());
+    writeChain = writeChain.then(async () => {
+      const data = await load();
+      const prev = migrateUser(data.users[userKey] ?? { updatedAt: new Date().toISOString() });
+      const empty = createEmptySession();
+      const newDraft: DraftRecord = {
+        id: empty.id,
+        status: "created",
+        session: empty,
+        createdAt: empty.startedAt,
+        updatedAt: new Date().toISOString(),
+      };
+      const drafts = [...(prev.drafts ?? []), newDraft];
+      data.users[userKey] = {
+        ...prev,
+        drafts,
+        activeDraftId: newDraft.id,
+        session: empty,
+        updatedAt: new Date().toISOString(),
+      };
+      await persist(data);
+      logPersist(data);
+    });
+    await writeChain;
   },
 
   async setSelectedVariant(userKey: string, index: number): Promise<void> {
     writeChain = writeChain.then(async () => {
       const data = await load();
       const prev = migrateUser(data.users[userKey] ?? { updatedAt: new Date().toISOString() });
-      if (!prev.session) return;
+      const activeId = prev.activeDraftId;
+      if (!activeId) return;
+      const drafts = [...(prev.drafts ?? [])];
+      const ix = drafts.findIndex((d) => d.id === activeId);
+      if (ix < 0) return;
+      const d = drafts[ix];
+      const session = { ...d.session, selectedVariantIndex: index };
+      drafts[ix] = { ...d, session, updatedAt: new Date().toISOString() };
       data.users[userKey] = {
         ...prev,
-        session: { ...prev.session, selectedVariantIndex: index },
+        drafts,
+        session,
         updatedAt: new Date().toISOString(),
       };
       await persist(data);
@@ -253,10 +431,25 @@ export const memoryStore = {
     writeChain = writeChain.then(async () => {
       const data = await load();
       const prev = migrateUser(data.users[userKey] ?? { updatedAt: new Date().toISOString() });
+      const activeId = prev.activeDraftId;
+      const drafts = [...(prev.drafts ?? [])];
       let session = prev.session ?? createEmptySession();
       session = { ...session, ...hints };
+      if (activeId) {
+        const ix = drafts.findIndex((d) => d.id === activeId);
+        if (ix >= 0) {
+          drafts[ix] = {
+            ...drafts[ix],
+            session,
+            recipientHint: hints.recipientHint ?? drafts[ix].recipientHint,
+            mode: hints.mode ?? drafts[ix].mode,
+            updatedAt: new Date().toISOString(),
+          };
+        }
+      }
       data.users[userKey] = {
         ...prev,
+        drafts,
         session,
         updatedAt: new Date().toISOString(),
       };
@@ -264,6 +457,83 @@ export const memoryStore = {
       logPersist(data);
     });
     await writeChain;
+  },
+
+  async updateDraftRecord(
+    userKey: string,
+    draftId: string,
+    updater: (d: DraftRecord) => DraftRecord,
+  ): Promise<void> {
+    writeChain = writeChain.then(async () => {
+      const data = await load();
+      const prev = migrateUser(data.users[userKey] ?? { updatedAt: new Date().toISOString() });
+      const drafts = (prev.drafts ?? []).map((d) => (d.id === draftId ? updater(d) : d));
+      let session = prev.session;
+      if (prev.activeDraftId === draftId) {
+        const active = drafts.find((x) => x.id === draftId);
+        if (active) session = active.session;
+      }
+      data.users[userKey] = {
+        ...prev,
+        drafts,
+        session,
+        updatedAt: new Date().toISOString(),
+      };
+      await persist(data);
+      logPersist(data);
+    });
+    await writeChain;
+  },
+
+  async setActiveDraft(userKey: string, draftId: string): Promise<boolean> {
+    let ok = false;
+    writeChain = writeChain.then(async () => {
+      const data = await load();
+      const prev = migrateUser(data.users[userKey] ?? { updatedAt: new Date().toISOString() });
+      const d = (prev.drafts ?? []).find((x) => x.id === draftId);
+      if (!d) return;
+      ok = true;
+      data.users[userKey] = {
+        ...prev,
+        activeDraftId: draftId,
+        session: cloneSession(d.session),
+        updatedAt: new Date().toISOString(),
+      };
+      await persist(data);
+      logPersist(data);
+    });
+    await writeChain;
+    return ok;
+  },
+
+  async deleteDraft(userKey: string, draftId: string): Promise<boolean> {
+    let ok = false;
+    writeChain = writeChain.then(async () => {
+      const data = await load();
+      const prev = migrateUser(data.users[userKey] ?? { updatedAt: new Date().toISOString() });
+      const drafts = (prev.drafts ?? []).filter((d) => d.id !== draftId);
+      if (drafts.length === (prev.drafts ?? []).length) return;
+      ok = true;
+      let activeDraftId = prev.activeDraftId;
+      let session = prev.session;
+      if (activeDraftId === draftId) {
+        activeDraftId = drafts[drafts.length - 1]?.id ?? null;
+        session = activeDraftId
+          ? cloneSession(drafts.find((x) => x.id === activeDraftId)!.session)
+          : null;
+      }
+      data.users[userKey] = {
+        ...prev,
+        drafts,
+        activeDraftId,
+        session,
+        updatedAt: new Date().toISOString(),
+      };
+      await persist(data);
+      logPersist(data);
+    });
+    await writeChain;
+    return ok;
   },
 
   /** @deprecated use appendSessionTurn */
@@ -288,7 +558,8 @@ export const memoryStore = {
     writeChain = writeChain.then(async () => {
       const data = await load();
       if (!data.pendingReminders) data.pendingReminders = [];
-      data.pendingReminders.push(record);
+      const rec = { ...record, kind: record.kind ?? "reminder" };
+      data.pendingReminders.push(rec);
       await persist(data);
       logPersist(data);
     });
